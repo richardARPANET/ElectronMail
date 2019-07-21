@@ -1,52 +1,89 @@
-# TODO improve artifacts sharng between the jobs, keep track of the following issues:
-# - https://github.com/travis-ci/travis-ci/issues/7590
-# - https://travis-ci.community/t/using-unified-cache-control-cache-identity/1531
 branches:
   only:
     - master
 language: node_js
 node_js: 11.14.0
-cache:
-  yarn: true
-  directories:
-    - output/git
-env:
-  global:
-    - MOZ_HEADLESS=1 # needed for karma tests running in headless mode
+before_install:
+  - | # installing the most recent yarn version
+    curl -o- -L https://yarnpkg.com/install.sh | bash;
+    export PATH="$HOME/.yarn/bin:$PATH";
+install:
+  - node --version
+  - npm --version
+  - yarn --version
+  - npx envinfo
+  - yarn install --pure-lockfile
+notifications:
+  email:
+    on_success: never
+    on_failure: change
+
+linux-common-embedding: &linux-common-anchor
+  os: linux
+  # TODO use "xenial" dist, running auto login e2e test using "node-keytar" is a blocker at the moment
+  # https://travis-ci.community/search?q=No%20output%20has%20been%20received%20in%20the%20last%20windows%20category%3A16
+  dist: trusty
+  group: stable
+  addons:
+    apt:
+      sources:
+        # upgrade GCC to a more recent version, see https://docs.travis-ci.com/user/languages/cpp/#gcc-on-linux
+        - ubuntu-toolchain-r-test
+      packages:
+        # for native modules compiling/rebuilding
+        - g++-7
+        # for rebuilding "node-keytar" native module (if there is no prebuild binary for used node version)
+        - gnome-keyring
+        - libgnome-keyring-dev
+        - libsecret-1-dev
+        # for initializing keychain for running e2e tests that use "node-keytar"
+        - python-gnomekeyring
+        # for building snap ("unsquashfs" binary)
+        - squashfs-tools
+    firefox: latest
+
+build-app-stage-common-embedding: &build-app-stage-common-anchor
+  before_cache:
+    # prevent "Failed to create dir" travis error occurring during unpacking the workspace artifact
+    - ./node_modules/.bin/mkdirp ./output/git
+  cache:
+    yarn: true
+  env:
+    global:
+      - MOZ_HEADLESS=1 # needed for karma tests running in headless mode
+  after_failure:
+    - tar -cvf e2e-logs.tar ./output/e2e
+    - yarn scripts/transfer upload e2e-logs.tar
+  workspaces:
+    use: 'webclients-artifact'
+
 jobs:
   include:
+    - stage: 'Build web clients'
+      <<: *linux-common-anchor
+      cache:
+        yarn: true
+        directories:
+          - output/git
+      workspaces:
+        create:
+          name: 'webclients-artifact'
+          paths:
+            - output/git
+      script: ./scripts/ci/prepare-webclients.sh
     - stage: 'Build app'
+      <<: *build-app-stage-common-anchor
       os: osx
       osx_image: xcode9.4
       addons:
         firefox: latest
       script: ./scripts/ci/travis/build-osx.sh
     - stage: 'Build app'
-      os: linux
-      # TODO use "xenial" dist, running auto login e2e test using "node-keytar" is a blocker at the moment
-      # https://travis-ci.community/search?q=No%20output%20has%20been%20received%20in%20the%20last%20windows%20category%3A16
-      dist: trusty
-      group: stable
+      <<: *linux-common-anchor
+      <<: *build-app-stage-common-anchor
       sudo: required
       services:
         - docker
-      addons:
-        apt:
-          sources:
-            # upgrade GCC to a more recent version, see https://docs.travis-ci.com/user/languages/cpp/#gcc-on-linux
-            - ubuntu-toolchain-r-test
-          packages:
-            # for native modules compiling/rebuilding
-            - g++-7
-            # for rebuilding "node-keytar" native module (if there is no prebuild binary for used node version)
-            - gnome-keyring
-            - libgnome-keyring-dev
-            - libsecret-1-dev
-            # for initializing keychain for running e2e tests that use "node-keytar"
-            - python-gnomekeyring
-            # for building snap ("unsquashfs" binary)
-            - squashfs-tools
-        firefox: latest
       before_script:
         - | # needed for native modules compiling/rebuilding
           export CC=gcc-7 CXX=g++-7;
@@ -62,20 +99,3 @@ jobs:
           eval $(/usr/bin/gnome-keyring-daemon --components=secrets --start);
           /usr/bin/python -c "import gnomekeyring;gnomekeyring.create_sync('login', '');";
       script: ./scripts/ci/travis/build-linux.sh
-before_install:
-  - | # installing the most recent yarn version
-    curl -o- -L https://yarnpkg.com/install.sh | bash;
-    export PATH="$HOME/.yarn/bin:$PATH";
-install:
-  - node --version
-  - npm --version
-  - yarn --version
-  - npx envinfo
-  - yarn install --pure-lockfile
-after_failure:
-  - tar -cvf e2e-logs.tar ./output/e2e
-  - yarn scripts/transfer upload e2e-logs.tar
-notifications:
-  email:
-    on_success: never
-    on_failure: change
